@@ -7,7 +7,6 @@ import (
 	"reflect"
 	"strings"
 
-	"github.com/ClickHouse/clickhouse-go/v2"
 	"github.com/hashicorp/go-version"
 	"gorm.io/gorm"
 	"gorm.io/gorm/callbacks"
@@ -18,26 +17,20 @@ import (
 )
 
 type Config struct {
-	DriverName                   string
-	DSN                          string
-	Conn                         gorm.ConnPool
-	DisableDatetimePrecision     bool
-	DontSupportRenameColumn      bool
-	DontSupportColumnPrecision   bool
-	DontSupportEmptyDefaultValue bool
-	SkipInitializeWithVersion    bool
-	DefaultGranularity           int    // 1 granule = 8192 rows
-	DefaultCompression           string // default compression algorithm. LZ4 is lossless
-	DefaultIndexType             string // index stores extremes of the expression
-	DefaultTableEngineOpts       string
-
-	InformationSchemaTablesTableTypeString bool // information_schema.tables.table_type is String
+	DriverName                string
+	DSN                       string
+	Conn                      gorm.ConnPool
+	DisableDatetimePrecision  bool
+	DontSupportRenameColumn   bool
+	SkipInitializeWithVersion bool
+	DefaultGranularity        int    // 1 granule = 8192 rows
+	DefaultCompression        string // default compression algorithm. LZ4 is lossless
+	DefaultIndexType          string // index stores extremes of the expression
+	DefaultTableEngineOpts    string
 }
 
 type Dialector struct {
 	*Config
-	options clickhouse.Options
-	Version string
 }
 
 func Open(dsn string) gorm.Dialector {
@@ -52,14 +45,13 @@ func (dialector Dialector) Name() string {
 	return "clickhouse"
 }
 
-func (dialector *Dialector) Initialize(db *gorm.DB) (err error) {
+func (dialector Dialector) Initialize(db *gorm.DB) (err error) {
 	// register callbacks
 	ctx := context.Background()
 	callbacks.RegisterDefaultCallbacks(db, &callbacks.Config{
 		DeleteClauses: []string{"DELETE", "WHERE"},
 	})
-	db.Callback().Create().Replace("gorm:create", dialector.Create)
-	db.Callback().Update().Replace("gorm:update", dialector.Update)
+	db.Callback().Create().Replace("gorm:create", Create)
 
 	// assign option fields to default values
 	if dialector.DriverName == "" {
@@ -92,32 +84,17 @@ func (dialector *Dialector) Initialize(db *gorm.DB) (err error) {
 		}
 	}
 
-	if dialector.DSN != "" {
-		if opts, err := clickhouse.ParseDSN(dialector.DSN); err == nil {
-			dialector.options = *opts
-		}
-	}
-
 	if !dialector.SkipInitializeWithVersion {
-		err = db.ConnPool.QueryRowContext(ctx, "SELECT version()").Scan(&dialector.Version)
+		var vs string
+		err = db.ConnPool.QueryRowContext(ctx, "SELECT version()").Scan(&vs)
 		if err != nil {
 			return err
 		}
-		if dbversion, err := version.NewVersion(dialector.Version); err == nil {
+		if dbversion, err := version.NewVersion(vs); err == nil {
 			versionNoRenameColumn, _ := version.NewConstraint("< 20.4")
 
 			if versionNoRenameColumn.Check(dbversion) {
 				dialector.Config.DontSupportRenameColumn = true
-			}
-
-			versionNoPrecisionColumn, _ := version.NewConstraint("< 21.11")
-			if versionNoPrecisionColumn.Check(dbversion) {
-				dialector.DontSupportColumnPrecision = true
-			}
-
-			versionTableType, _ := version.NewConstraint(">= 23.9")
-			if versionTableType.Check(dbversion) {
-				dialector.Config.InformationSchemaTablesTableTypeString = true
 			}
 		}
 	}
@@ -214,7 +191,7 @@ func (dialector Dialector) Migrator(db *gorm.DB) gorm.Migrator {
 		Migrator: migrator.Migrator{
 			Config: migrator.Config{
 				DB:        db,
-				Dialector: &dialector,
+				Dialector: dialector,
 			},
 		},
 		Dialector: dialector,
