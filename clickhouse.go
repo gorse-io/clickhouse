@@ -7,7 +7,6 @@ import (
 	"reflect"
 	"strings"
 
-	_ "github.com/ClickHouse/clickhouse-go"
 	"github.com/hashicorp/go-version"
 	"gorm.io/gorm"
 	"gorm.io/gorm/callbacks"
