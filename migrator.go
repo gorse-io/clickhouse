@@ -298,7 +298,7 @@ func (m Migrator) ColumnTypes(value interface{}) ([]gorm.ColumnType, error) {
 		var rawColumnTypes []*sql.ColumnType
 		rawColumnTypes, err = rows.ColumnTypes()
 
-		columnTypeSQL := "SELECT name, type, default_expression, comment, is_in_primary_key, character_octet_length, numeric_precision, numeric_precision_radix, numeric_scale, datetime_precision FROM system.columns WHERE database = ? AND table = ?"
+		columnTypeSQL := "SELECT name, type, default_expression, comment, is_in_primary_key FROM system.columns WHERE database = ? AND table = ?"
 		columns, rowErr := m.DB.Raw(columnTypeSQL, m.CurrentDatabase(), stmt.Table).Rows()
 		if rowErr != nil {
 			return rowErr
@@ -308,11 +308,9 @@ func (m Migrator) ColumnTypes(value interface{}) ([]gorm.ColumnType, error) {
 
 		for columns.Next() {
 			var (
-				column            migrator.ColumnType
-				datetimePrecision sql.NullInt64
-				radixValue        sql.NullInt64
-				values            = []interface{}{
-					&column.NameValue, &column.DataTypeValue, &column.DefaultValueValue, &column.CommentValue, &column.PrimaryKeyValue, &column.LengthValue, &column.DecimalSizeValue, &radixValue, &column.ScaleValue, &datetimePrecision,
+				column migrator.ColumnType
+				values = []interface{}{
+					&column.NameValue, &column.DataTypeValue, &column.DefaultValueValue, &column.CommentValue, &column.PrimaryKeyValue,
 				}
 			)
 
@@ -321,11 +319,6 @@ func (m Migrator) ColumnTypes(value interface{}) ([]gorm.ColumnType, error) {
 			}
 
 			column.ColumnTypeValue = column.DataTypeValue
-
-			if datetimePrecision.Valid {
-				column.DecimalSizeValue = datetimePrecision
-			}
-
 			if column.DefaultValueValue.Valid {
 				column.DefaultValueValue.String = strings.Trim(column.DefaultValueValue.String, "'")
 			}
@@ -405,6 +398,20 @@ func (m Migrator) DropIndex(value interface{}, name string) error {
 			clause.Table{Name: stmt.Table},
 			clause.Column{Name: name}).Error
 	})
+}
+
+func (m Migrator) HasIndex(value interface{}, name string) bool {
+	var count int64
+	m.RunWithValue(value, func(stmt *gorm.Statement) error {
+		if idx := stmt.Schema.LookIndex(name); idx != nil {
+			name = idx.Name
+		}
+		return m.DB.Raw(
+			"SELECT count(*) FROM system.data_skipping_indices WHERE table = ? AND name = ? AND database = ?", stmt.Table, name, m.CurrentDatabase(),
+		).Scan(&count).Error
+	})
+
+	return count > 0
 }
 
 // Helper
