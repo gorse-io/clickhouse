@@ -1,11 +1,9 @@
 package clickhouse
 
 import (
-	"bufio"
 	"database/sql"
 	"errors"
 	"fmt"
-	"regexp"
 	"strconv"
 	"strings"
 
@@ -17,7 +15,7 @@ import (
 
 // Errors enumeration
 var (
-	ErrRenameColumnUnsupported = errors.New("renaming column is not supported in your clickhouse version < 20.4")
+	ErrRenameColumnUnsupported = errors.New("renaming column is not supported in your clickhouse version < 20.4.")
 	ErrRenameIndexUnsupported  = errors.New("renaming index is not supported")
 	ErrCreateIndexFailed       = errors.New("failed to create index with name")
 )
@@ -25,49 +23,6 @@ var (
 type Migrator struct {
 	migrator.Migrator
 	Dialector
-}
-
-// isolateClusterOption splits ON CLUSTER clause from raw table options
-func isolateClusterOption(tableOpts string) (clusterOpts, cleanedOpts string) {
-	cleanedOpts = tableOpts
-	if tableOpts == "" {
-		return
-	}
-	re := regexp.MustCompile(`ON CLUSTER (?:'([^']+)'|([^\s]+))`)
-	clusterMatch := re.FindString(tableOpts)
-	if clusterMatch == "" {
-		return
-	}
-	clusterOpts = formatClusterClause(clusterMatch)
-	cleanedOpts = strings.TrimSpace(strings.Replace(tableOpts, clusterMatch, "", 1))
-	return
-}
-
-// formatClusterClause ensures ON CLUSTER clause begins with a single space and has no trailing space
-func formatClusterClause(cluster string) string {
-	clause := strings.TrimSpace(cluster)
-	if clause == "" {
-		return ""
-	}
-	if !strings.HasPrefix(clause, " ") {
-		clause = " " + clause
-	}
-	return clause
-}
-
-// extractClusterOption extracts ON CLUSTER clause from table options
-func (m Migrator) extractClusterOption() string {
-	// Extract ON CLUSTER from gorm:table_options
-	if tableOption, ok := m.DB.Get("gorm:table_options"); ok {
-		if clusterOpts, _ := isolateClusterOption(fmt.Sprint(tableOption)); clusterOpts != "" {
-			return clusterOpts
-		}
-	}
-	// Also support legacy gorm:table_cluster_options (for backward compatibility)
-	if clusterOption, ok := m.DB.Get("gorm:table_cluster_options"); ok {
-		return formatClusterClause(fmt.Sprint(clusterOption))
-	}
-	return ""
 }
 
 // Database
@@ -110,7 +65,10 @@ func (m Migrator) FullDataTypeOf(field *schema.Field) (expr clause.Expr) {
 	// NOTE: the codec algo name is case sensitive!
 	if codecstr, ok := field.TagSettings["CODEC"]; ok && codecstr != "" {
 		// parse codec one by one in the codec option
-		codecSlice := strings.Split(codecstr, ",")
+		codecSlice := make([]string, 0, 10)
+		for _, codec := range strings.Split(codecstr, ",") {
+			codecSlice = append(codecSlice, codec)
+		}
 		codecArgsSQL := m.Dialector.DefaultCompression
 		if len(codecSlice) > 0 {
 			codecArgsSQL = strings.Join(codecSlice, ",")
@@ -129,7 +87,7 @@ func (m Migrator) CreateTable(models ...interface{}) error {
 		tx := m.DB.Session(new(gorm.Session))
 		if err := m.RunWithValue(model, func(stmt *gorm.Statement) (err error) {
 			var (
-				createTableSQL = "CREATE TABLE ?%s (%s %s %s) %s"
+				createTableSQL = "CREATE TABLE ?%s(%s %s %s) %s"
 				args           = []interface{}{clause.Table{Name: stmt.Table}}
 			)
 
@@ -200,20 +158,13 @@ func (m Migrator) CreateTable(models ...interface{}) error {
 
 			// Step 4. Finally assemble CREATE TABLE ... SQL string
 			engineOpts := m.Dialector.DefaultTableEngineOpts
-			tableOption, hasTableOption := m.DB.Get("gorm:table_options")
-			clusterOpts := ""
-			if hasTableOption {
-				tableOpts := fmt.Sprint(tableOption)
-				var cleanedOpts string
-				clusterOpts, cleanedOpts = isolateClusterOption(tableOpts)
-				engineOpts = cleanedOpts
+			if tableOption, ok := m.DB.Get("gorm:table_options"); ok {
+				engineOpts = fmt.Sprint(tableOption)
 			}
 
-			// Also support legacy gorm:table_cluster_options (for backward compatibility)
+			clusterOpts := ""
 			if clusterOption, ok := m.DB.Get("gorm:table_cluster_options"); ok {
-				if clusterOpts == "" {
-					clusterOpts = " " + fmt.Sprint(clusterOption) + " "
-				}
+				clusterOpts = " " + fmt.Sprint(clusterOption) + " "
 			}
 
 			createTableSQL = fmt.Sprintf(createTableSQL, clusterOpts, columnStr, constrStr, indexStr, engineOpts)
@@ -241,38 +192,13 @@ func (m Migrator) HasTable(value interface{}) bool {
 	return count > 0
 }
 
-// GetTables
-// clickhouse version 23.9 changelog
-// Made the views in schema information_schema more compatible with the equivalent views in MySQL
-// (i.e. modified and extended them) up to a point where Tableau Online is able to connect to ClickHouse.
-// More specifically:
-// 1. The type of field information_schema.tables.table_type changed from Enum8 to String.
-// 2. Added fields table_comment and table_collation to view information_schema.table.
-// 3. Added views information_schema.key_column_usage and referential_constraints.
-// 4. Replaced uppercase aliases in information_schema views with concrete uppercase columns.
-// https://github.com/ClickHouse/ClickHouse/pull/54773
-//
-// version < 23.9 table_type Enum8('BASE TABLE' = 1, 'VIEW' = 2, 'FOREIGN TABLE' = 3, 'LOCAL TEMPORARY' = 4, 'SYSTEM VIEW' = 5)
-// version >= 23.9 table_type String
-func (m Migrator) GetTables() (tableList []string, err error) {
-	if m.Dialector.Config.InformationSchemaTablesTableTypeString {
-		err = m.DB.Raw("SELECT TABLE_NAME FROM information_schema.tables where table_schema=? and table_type ='BASE TABLE'", m.CurrentDatabase()).Scan(&tableList).Error
-		return
-	}
-
-	err = m.DB.Raw("SELECT TABLE_NAME FROM information_schema.tables where table_schema=? and table_type =1", m.CurrentDatabase()).Scan(&tableList).Error
-	return
-}
-
 // Columns
 
 func (m Migrator) AddColumn(value interface{}, field string) error {
 	return m.RunWithValue(value, func(stmt *gorm.Statement) error {
 		if field := stmt.Schema.LookUpField(field); field != nil {
-			clusterOpts := m.extractClusterOption()
-			sQL := fmt.Sprintf("ALTER TABLE ?%s ADD COLUMN ? ?", clusterOpts)
 			return m.DB.Exec(
-				sQL,
+				"ALTER TABLE ? ADD COLUMN ? ?",
 				clause.Table{Name: stmt.Table}, clause.Column{Name: field.DBName},
 				m.FullDataTypeOf(field),
 			).Error
@@ -286,10 +212,8 @@ func (m Migrator) DropColumn(value interface{}, name string) error {
 		if field := stmt.Schema.LookUpField(name); field != nil {
 			name = field.DBName
 		}
-		clusterOpts := m.extractClusterOption()
-		sQL := fmt.Sprintf("ALTER TABLE ?%s DROP COLUMN ?", clusterOpts)
 		return m.DB.Exec(
-			sQL,
+			"ALTER TABLE ? DROP COLUMN ?",
 			clause.Table{Name: stmt.Table}, clause.Column{Name: name},
 		).Error
 	})
@@ -298,10 +222,8 @@ func (m Migrator) DropColumn(value interface{}, name string) error {
 func (m Migrator) AlterColumn(value interface{}, field string) error {
 	return m.RunWithValue(value, func(stmt *gorm.Statement) error {
 		if field := stmt.Schema.LookUpField(field); field != nil {
-			clusterOpts := m.extractClusterOption()
-			sQL := fmt.Sprintf("ALTER TABLE ?%s MODIFY COLUMN ? ?", clusterOpts)
 			return m.DB.Exec(
-				sQL,
+				"ALTER TABLE ? MODIFY COLUMN ? ?",
 				clause.Table{Name: stmt.Table},
 				clause.Column{Name: field.DBName},
 				m.FullDataTypeOf(field),
@@ -326,10 +248,8 @@ func (m Migrator) RenameColumn(value interface{}, oldName, newName string) error
 				field = f
 			}
 			if field != nil {
-				clusterOpts := m.extractClusterOption()
-				sQL := fmt.Sprintf("ALTER TABLE ?%s RENAME COLUMN ? TO ?", clusterOpts)
 				return m.DB.Exec(
-					sQL,
+					"ALTER TABLE ? RENAME COLUMN ? TO ?",
 					clause.Table{Name: stmt.Table},
 					clause.Column{Name: oldName},
 					clause.Column{Name: newName},
@@ -372,18 +292,13 @@ func (m Migrator) ColumnTypes(value interface{}) ([]gorm.ColumnType, error) {
 		}
 
 		defer func() {
-			if err == nil {
-				err = rows.Close()
-			}
+			err = rows.Close()
 		}()
 
 		var rawColumnTypes []*sql.ColumnType
 		rawColumnTypes, err = rows.ColumnTypes()
 
-		columnTypeSQL := "SELECT name, type, default_expression, comment, is_in_primary_key, character_octet_length, numeric_precision, numeric_precision_radix, numeric_scale, datetime_precision FROM system.columns WHERE database = ? AND table = ?"
-		if m.Dialector.DontSupportColumnPrecision {
-			columnTypeSQL = "SELECT name, type, default_expression, comment, is_in_primary_key FROM system.columns WHERE database = ? AND table = ?"
-		}
+		columnTypeSQL := "SELECT name, type, default_expression, comment, is_in_primary_key FROM system.columns WHERE database = ? AND table = ?"
 		columns, rowErr := m.DB.Raw(columnTypeSQL, m.CurrentDatabase(), stmt.Table).Rows()
 		if rowErr != nil {
 			return rowErr
@@ -393,51 +308,19 @@ func (m Migrator) ColumnTypes(value interface{}) ([]gorm.ColumnType, error) {
 
 		for columns.Next() {
 			var (
-				column            migrator.ColumnType
-				decimalSizeValue  *uint64
-				datetimePrecision *uint64
-				radixValue        *uint64
-				scaleValue        *uint64
-				lengthValue       *uint64
-				values            = []interface{}{
-					&column.NameValue, &column.DataTypeValue, &column.DefaultValueValue, &column.CommentValue, &column.PrimaryKeyValue, &lengthValue, &decimalSizeValue, &radixValue, &scaleValue, &datetimePrecision,
+				column migrator.ColumnType
+				values = []interface{}{
+					&column.NameValue, &column.DataTypeValue, &column.DefaultValueValue, &column.CommentValue, &column.PrimaryKeyValue,
 				}
 			)
-
-			if m.Dialector.DontSupportColumnPrecision {
-				values = []interface{}{&column.NameValue, &column.DataTypeValue, &column.DefaultValueValue, &column.CommentValue, &column.PrimaryKeyValue}
-			}
 
 			if scanErr := columns.Scan(values...); scanErr != nil {
 				return scanErr
 			}
 
 			column.ColumnTypeValue = column.DataTypeValue
-
-			if decimalSizeValue != nil {
-				column.DecimalSizeValue.Int64 = int64(*decimalSizeValue)
-				column.DecimalSizeValue.Valid = true
-			} else if datetimePrecision != nil {
-				column.DecimalSizeValue.Int64 = int64(*datetimePrecision)
-				column.DecimalSizeValue.Valid = true
-			}
-
-			if scaleValue != nil {
-				column.ScaleValue.Int64 = int64(*scaleValue)
-				column.ScaleValue.Valid = true
-			}
-
-			if lengthValue != nil {
-				column.LengthValue.Int64 = int64(*lengthValue)
-				column.LengthValue.Valid = true
-			}
-
 			if column.DefaultValueValue.Valid {
 				column.DefaultValueValue.String = strings.Trim(column.DefaultValueValue.String, "'")
-			}
-
-			if m.Dialector.DontSupportEmptyDefaultValue && column.DefaultValueValue.String == "" {
-				column.DefaultValueValue.Valid = false
 			}
 
 			for _, c := range rawColumnTypes {
@@ -518,32 +401,14 @@ func (m Migrator) DropIndex(value interface{}, name string) error {
 }
 
 func (m Migrator) HasIndex(value interface{}, name string) bool {
-	var count int
+	var count int64
 	m.RunWithValue(value, func(stmt *gorm.Statement) error {
-		currentDatabase := m.DB.Migrator().CurrentDatabase()
-
 		if idx := stmt.Schema.LookIndex(name); idx != nil {
 			name = idx.Name
 		}
-
-		showCreateTableSQL := fmt.Sprintf("SHOW CREATE TABLE %s.%s", currentDatabase, stmt.Table)
-		var createStmt string
-		if err := m.DB.Raw(showCreateTableSQL).Row().Scan(&createStmt); err != nil {
-			return err
-		}
-
-		indexNames := m.extractIndexNamesFromCreateStmt(createStmt)
-
-		// fmt.Printf("==== DEBUG ==== m.Mirror.HasIndex(%v, %v) count = %v, stmt: [\n%v\n]\nnames: %v\n",
-		// 	stmt.Table, name, count, createStmt, indexNames)
-
-		for _, indexName := range indexNames {
-			if indexName == name {
-				count = 1
-				break
-			}
-		}
-		return nil
+		return m.DB.Raw(
+			"SELECT count(*) FROM system.data_skipping_indices WHERE table = ? AND name = ? AND database = ?", stmt.Table, name, m.CurrentDatabase(),
+		).Scan(&count).Error
 	})
 
 	return count > 0
@@ -579,54 +444,4 @@ func (m Migrator) getIndexGranularityOption(opts []schema.IndexOption) int {
 		}
 	}
 	return m.Dialector.DefaultGranularity
-}
-
-/*
-sample input:
-
-CREATE TABLE my_database.my_foo_bar
-(
-
-	`id` UInt64,
-	`created_at` DateTime64(3),
-	`updated_at` DateTime64(3),
-	`deleted_at` DateTime64(3),
-	`foo` String,
-	`bar` String,
-	INDEX idx_my_foo_bar_deleted_at deleted_at TYPE minmax GRANULARITY 3,
-	INDEX my_fb_foo_bar (foo, bar) TYPE minmax GRANULARITY 3
-
-)
-ENGINE = MergeTree
-PARTITION BY toYYYYMM(created_at)
-ORDER BY (foo, bar)
-SETTINGS index_granularity = 8192
-*/
-func (m Migrator) extractIndexNamesFromCreateStmt(createStmt string) []string {
-	var names []string
-	scanner := bufio.NewScanner(strings.NewReader(createStmt))
-	state := 0 // 0: before create body, 1: in create body, 2: after create body
-	for scanner.Scan() && state < 2 {
-		line := scanner.Text()
-		switch state {
-		case 0:
-			if strings.HasPrefix(line, "(") {
-				state = 1
-			}
-		case 1:
-			if strings.HasPrefix(line, ")") {
-				state = 2
-				continue
-			}
-			line = strings.TrimSpace(line)
-			if strings.HasPrefix(line, "INDEX ") {
-				line = strings.TrimPrefix(line, "INDEX ")
-				elems := strings.Split(line, " ")
-				if len(elems) > 0 {
-					names = append(names, elems[0])
-				}
-			}
-		}
-	}
-	return names
 }
