@@ -51,7 +51,6 @@ func (dialector Dialector) Initialize(db *gorm.DB) (err error) {
 	callbacks.RegisterDefaultCallbacks(db, &callbacks.Config{
 		DeleteClauses: []string{"DELETE", "WHERE"},
 	})
-	db.Callback().Create().Replace("gorm:create", Create)
 
 	// assign option fields to default values
 	if dialector.DriverName == "" {
