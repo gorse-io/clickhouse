@@ -298,7 +298,7 @@ func (m Migrator) ColumnTypes(value interface{}) ([]gorm.ColumnType, error) {
 		var rawColumnTypes []*sql.ColumnType
 		rawColumnTypes, err = rows.ColumnTypes()
 
-		columnTypeSQL := "SELECT name, type, default_expression, comment, is_in_primary_key FROM system.columns WHERE database = ? AND table = ?"
+		columnTypeSQL := "SELECT name, type, default_kind, default_expression, comment, is_in_primary_key FROM system.columns WHERE database = ? AND table = ?"
 		columns, rowErr := m.DB.Raw(columnTypeSQL, m.CurrentDatabase(), stmt.Table).Rows()
 		if rowErr != nil {
 			return rowErr
@@ -308,9 +308,11 @@ func (m Migrator) ColumnTypes(value interface{}) ([]gorm.ColumnType, error) {
 
 		for columns.Next() {
 			var (
-				column migrator.ColumnType
-				values = []interface{}{
-					&column.NameValue, &column.DataTypeValue, &column.DefaultValueValue, &column.CommentValue, &column.PrimaryKeyValue,
+				column            migrator.ColumnType
+				defaultKind       sql.NullString
+				defaultExpression sql.NullString
+				values            = []interface{}{
+					&column.NameValue, &column.DataTypeValue, &defaultKind, &defaultExpression, &column.CommentValue, &column.PrimaryKeyValue,
 				}
 			)
 
@@ -319,7 +321,8 @@ func (m Migrator) ColumnTypes(value interface{}) ([]gorm.ColumnType, error) {
 			}
 
 			column.ColumnTypeValue = column.DataTypeValue
-			if column.DefaultValueValue.Valid {
+			if defaultKind.Valid && defaultKind.String == "DEFAULT" {
+				column.DefaultValueValue = defaultExpression
 				column.DefaultValueValue.String = strings.Trim(column.DefaultValueValue.String, "'")
 			}
 
