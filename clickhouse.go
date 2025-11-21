@@ -141,7 +141,7 @@ func modifyExprs(exprs []clause.Expression) {
 func (dialector Dialector) ClauseBuilders() map[string]clause.ClauseBuilder {
 	clauseBuilders := map[string]clause.ClauseBuilder{
 		"DELETE": func(c clause.Clause, builder clause.Builder) {
-			builder.WriteString("ALTER TABLE ")
+			builder.WriteString("DELETE FROM ")
 
 			var addedTable bool
 			if stmt, ok := builder.(*gorm.Statement); ok {
@@ -156,7 +156,6 @@ func (dialector Dialector) ClauseBuilders() map[string]clause.ClauseBuilder {
 			if !addedTable {
 				builder.WriteQuoted(clause.Table{Name: clause.CurrentTable})
 			}
-			builder.WriteString(" DELETE")
 		},
 		"UPDATE": func(c clause.Clause, builder clause.Builder) {
 			builder.WriteString("ALTER TABLE ")
