@@ -3,6 +3,8 @@ package clickhouse
 import (
 	"context"
 	"database/sql"
+
+	"github.com/ClickHouse/clickhouse-go/v2"
 	"fmt"
 	"reflect"
 	"strings"
@@ -17,20 +19,26 @@ import (
 )
 
 type Config struct {
-	DriverName                string
-	DSN                       string
-	Conn                      gorm.ConnPool
-	DisableDatetimePrecision  bool
-	DontSupportRenameColumn   bool
-	SkipInitializeWithVersion bool
-	DefaultGranularity        int    // 1 granule = 8192 rows
-	DefaultCompression        string // default compression algorithm. LZ4 is lossless
-	DefaultIndexType          string // index stores extremes of the expression
-	DefaultTableEngineOpts    string
+	DriverName                   string
+	DSN                          string
+	Conn                         gorm.ConnPool
+	DisableDatetimePrecision     bool
+	DontSupportRenameColumn      bool
+	DontSupportColumnPrecision   bool
+	DontSupportEmptyDefaultValue bool
+	SkipInitializeWithVersion    bool
+	DefaultGranularity           int    // 1 granule = 8192 rows
+	DefaultCompression           string // default compression algorithm. LZ4 is lossless
+	DefaultIndexType             string // index stores extremes of the expression
+	DefaultTableEngineOpts       string
+
+	InformationSchemaTablesTableTypeString bool // information_schema.tables.table_type is String
 }
 
 type Dialector struct {
 	*Config
+	options clickhouse.Options
+	Version string
 }
 
 func Open(dsn string) gorm.Dialector {
@@ -80,6 +88,12 @@ func (dialector Dialector) Initialize(db *gorm.DB) (err error) {
 		db.ConnPool, err = sql.Open(dialector.DriverName, dialector.DSN)
 		if err != nil {
 			return err
+		}
+
+		if dialector.DSN != "" {
+			if opts, err := clickhouse.ParseDSN(dialector.DSN); err == nil {
+				dialector.options = *opts
+			}
 		}
 	}
 
@@ -141,7 +155,7 @@ func modifyExprs(exprs []clause.Expression) {
 func (dialector Dialector) ClauseBuilders() map[string]clause.ClauseBuilder {
 	clauseBuilders := map[string]clause.ClauseBuilder{
 		"DELETE": func(c clause.Clause, builder clause.Builder) {
-			builder.WriteString("ALTER TABLE ")
+			builder.WriteString("DELETE FROM ")
 
 			var addedTable bool
 			if stmt, ok := builder.(*gorm.Statement); ok {
@@ -156,7 +170,6 @@ func (dialector Dialector) ClauseBuilders() map[string]clause.ClauseBuilder {
 			if !addedTable {
 				builder.WriteQuoted(clause.Table{Name: clause.CurrentTable})
 			}
-			builder.WriteString(" DELETE")
 		},
 		"UPDATE": func(c clause.Clause, builder clause.Builder) {
 			builder.WriteString("ALTER TABLE ")
